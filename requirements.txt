@@ -1,0 +1,14 @@
+--index-url https://download.pytorch.org/whl/cu121
+librosa
+colorednoise
+setuptools
+pandas
+torch
+torchvision
+torchaudio
+colorednoise
+nnAudio==0.3.1
+timm
+pillow
+opencv-python
+audiomentations
