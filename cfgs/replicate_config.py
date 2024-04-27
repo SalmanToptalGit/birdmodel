@@ -27,7 +27,7 @@ config = {
     },
     "val_loader_config": {
         "batch_size": 64,
-        "num_workers": 16,
+        "num_workers": 8,
         "pin_memory": True,
         "drop_last": False,
     },
