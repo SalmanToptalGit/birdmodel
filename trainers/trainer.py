@@ -15,10 +15,11 @@ from timm.scheduler import CosineLRScheduler
 from utils.init_utils import AverageMeter
 from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
+from nn.sampler import MultilabelBalancedRandomSampler
 import warnings
 import copy
 warnings.filterwarnings("ignore")
-from utils.data_utils import setup_output_dir, read_dataframe, normalize_rating, do_kfold
+from utils.data_utils import setup_output_dir, read_dataframe, normalize_rating, do_kfold, prepare_teacher_pred
 
 class Trainer:
 
@@ -107,12 +108,27 @@ class Trainer:
         logger.info(val_df.shape)
         logger.info(val_df['primary_label'].value_counts())
 
-        labels = trn_df["primary_label"].values
-        un_labels = np.unique(labels)
-        weight = {t: 1.0 / len(np.where(labels == t)[0]) for t in un_labels}
-        samples_weight = np.array([weight[t] for t in labels])
-        sampler = WeightedRandomSampler(torch.from_numpy(samples_weight).type('torch.DoubleTensor'),
-                                        len(samples_weight))
+        # labels = trn_df["primary_label"].values
+        # un_labels = np.unique(labels)
+        # weight = {t: 1.0 / len(np.where(labels == t)[0]) for t in un_labels}
+        # samples_weight = np.array([weight[t] for t in labels])
+        # sampler = WeightedRandomSampler(torch.from_numpy(samples_weight).type('torch.DoubleTensor'),
+        #                                 len(samples_weight))
+
+        one_hot_target = np.zeros((trn_df.shape[0], len(config["target_columns"])), dtype=np.float32)
+
+        for i, label in enumerate(trn_df.primary_label):
+            primary_label = config["bird2id"][label]
+            one_hot_target[i, primary_label] = 1.0
+
+        sampler = MultilabelBalancedRandomSampler(
+            one_hot_target,
+            trn_df.index,
+            class_choice="least_sampled"
+        )
+
+
+
 
         trn_dataset = BirdDataset(df=trn_df.reset_index(drop=True), config=config,
                                   num_classes=len(config["target_columns"]), add_secondary_labels=True)
@@ -124,7 +140,13 @@ class Trainer:
         val_loader = torch.utils.data.DataLoader(v_ds, shuffle=False, **config["val_loader_config"])
 
         model = CNN(config).to(config["device"])
-        criterion = FocalLoss()
+
+        if config["KD"]:
+            criterion = BCEKDLoss()
+        else:
+            criterion = FocalLoss()
+
+
         optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr_max"], betas=(0.9, 0.999), eps=1e-08,
                                       weight_decay=config["weight_decay"], amsgrad=False, )
         scheduler = CosineLRScheduler(optimizer, t_initial=10, warmup_t=1, cycle_limit=40, cycle_decay=1.0,
@@ -202,6 +224,7 @@ class Trainer:
     def train_folds(self, config):
         config = setup_output_dir(config)
         df = read_dataframe()
+        df["teacher_preds"] = prepare_teacher_pred(config["target_columns"])
         set_seed(config["seed"])
         df["rating"] = normalize_rating(df)
         df = do_kfold(df, KFOLD=5)

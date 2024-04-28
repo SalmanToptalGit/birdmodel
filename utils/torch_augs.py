@@ -7,7 +7,7 @@ class Mixup(torch.nn.Module):
         super(Mixup, self).__init__()
         self.beta_distribution = torch.distributions.Beta(mix_beta, mix_beta)
 
-    def forward(self, X, Y, weight=None):
+    def forward(self, X, Y, weight=None, teacher_preds=None):
 
         bs = X.shape[0]
         n_dims = len(X.shape)
@@ -27,8 +27,10 @@ class Mixup(torch.nn.Module):
             return X, Y
         else:
             weight = coeffs.view(-1) * weight + (1 - coeffs.view(-1)) * weight[perm]
-            return X, Y, weight
-
+            if teacher_preds is None:
+                return X, Y, weight
+            teacher_preds = coeffs.view(-1, 1) * teacher_preds + (1 - coeffs.view(-1, 1)) * teacher_preds[perm]
+            return X, Y, weight, teacher_preds
 
 class ConcatMix(torch.nn.Module):
     def __init__(self, device):

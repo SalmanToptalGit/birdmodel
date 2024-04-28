@@ -15,20 +15,22 @@ config = {
     "secondary_coef": 1.0,
     "smooth_label": 0.05,
     "period": 5,
-    "backbone": "eca_nfnet_l0",
+    "backbone": "tf_efficientnet_b3_ns",
     "pretrained": True,
     "fold": [3],
     "in_chans": 1,
 
+    "KD" : True,
+
     "output_folder": "outputs",
-    "exp_name": "EXP3",
+    "exp_name": "EXP4",
 
     "device": get_device(),
     "apex": True,
     "max_grad_norm": 10,
 
-    "early_stopping": 10,
-    "epochs": 120,
+    "early_stopping": 25,
+    "epochs": 150,
 
     "train_loader_config": {
         "batch_size": 32,
@@ -43,7 +45,7 @@ config = {
         "drop_last": False,
     },
 
-    "lr_max": 2.5e-4,
+    "lr_max": 1e-4,
     "lr_min": 1e-7,
     "weight_decay": 1e-6,
 

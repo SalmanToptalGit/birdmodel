@@ -141,4 +141,7 @@ def read_dataframe():
     return df
 
 
+def prepare_teacher_pred(target_columns):
+    kaggle_model_predictions = pd.read_csv('../data/birdclef-2024/train_meta_data_pseudo_2.csv')
+    return kaggle_model_predictions[target_columns].values.tolist()
 

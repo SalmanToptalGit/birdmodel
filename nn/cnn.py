@@ -2,10 +2,12 @@
 import torch.nn as nn
 import timm
 from torchaudio.transforms import AmplitudeToDB, MelSpectrogram
+from utils.spec_utils import SpecAugment
 import torch
 import numpy as np
-from utils.torch_augs import *
+from utils.torch_augs import Mixup
 import warnings
+import torch.nn.functional as F
 warnings.filterwarnings("ignore")
 
 
@@ -66,6 +68,21 @@ class PoolingLayer(nn.Module):
             x = x.view(bs, ch)
         return x
 
+def gem(x, p=3, eps=1e-6):
+    return
+
+
+class GeM(nn.Module):
+    def __init__(self, p=3, eps=1e-6):
+        super(GeM, self).__init__()
+        self.p = torch.nn.Parameter(torch.ones(1) * p)
+        self.eps = eps
+
+    def forward(self, x):
+        bs, ch, h, w = x.shape
+        x = F.avg_pool2d(x.clamp(min=self.eps).pow(self.p), (x.size(-2), x.size(-1))).pow(1.0 / self.p)
+        x = x.view(bs, ch)
+        return x
 
 class CNN(nn.Module):
     def __init__(self, config):
@@ -97,32 +114,32 @@ class CNN(nn.Module):
         )
         feature_dims = self.backbone.feature_info.channels()
         print(f"feature dims: {feature_dims}")
-        self.global_pools = torch.nn.ModuleList([PoolingLayer("GeM") for _ in out_indices])
+        self.global_pools = torch.nn.ModuleList([GeM() for _ in out_indices])
         self.mid_features = np.sum(feature_dims)
         self.neck = torch.nn.BatchNorm1d(self.mid_features)
         self.head = nn.Linear(self.mid_features, len(config["target_columns"]))
 
         self.mixup = Mixup(mix_beta=1.0)
-        self.cutmix = Cutmix(mix_beta=1.0)
 
-    def apply_mixup_cutmix(self, x, y, weight):
+    def apply_mixup_cutmix(self, x, y, weight, teacher_preds=None):
 
         b, c, f, t = x.shape
         x = x.permute(0, 3, 1, 2)
         x = x.reshape(b, t, c, f)
         if np.random.random() <= 1.0:
-            x, y, weight = self.mixup(x, y, weight)
-        if np.random.random() <= 0.5:
-            x, y, weight = self.cutmix(x, y, weight)
+            if teacher_preds is not None:
+                x, y, weight, teacher_preds = self.mixup(x, y, weight, teacher_preds)
+            else:
+                x, y, weight = self.mixup(x, y, weight)
         x = x.reshape(b, t, c, f)
         x = x.permute(0, 2, 3, 1)
-        return x, y, weight
+        return x, y, weight, teacher_preds
 
     def backbone_pass(self, x):
         spec = self.logmelspec_extractor(x["wave"]).unsqueeze(1)
 
         if self.training:
-            spec, x["smooth_targets"], x["rating"] = self.apply_mixup_cutmix(x=spec, y=x["smooth_targets"], weight=x["rating"])
+            spec, x["smooth_targets"], x["rating"], x["teacher_preds"] = self.apply_mixup_cutmix(x=spec, y=x["smooth_targets"], weight=x["rating"], teacher_preds=x["teacher_preds"])
 
         ms = self.backbone(spec)
         h = torch.cat([global_pool(m) for m, global_pool in zip(ms, self.global_pools)], dim=1)

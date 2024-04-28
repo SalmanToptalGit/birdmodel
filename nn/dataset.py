@@ -29,6 +29,7 @@ class BirdDataset(torchdata.Dataset):
         self.smooth_label = config['smooth_label']
         self.num_classes = num_classes
         self.add_secondary_labels = add_secondary_labels
+        self.KD = config["KD"]
 
     def __len__(self):
         return len(self.df)
@@ -85,6 +86,10 @@ class BirdDataset(torchdata.Dataset):
             "rating": rating,
             "primary_targets": (target > 0.5).float(),
             "smooth_targets": target * (1 - self.smooth_label) + self.smooth_label / target.size(-1),
+            "teacher_preds" : None,
         }
+
+        if self.KD:
+            batch_dict["teacher_preds"] = torch.from_numpy(np.nan_to_num(self.df["teacher_preds"].iloc[idx])).float()
 
         return batch_dict
