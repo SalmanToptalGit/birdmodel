@@ -20,8 +20,8 @@ config = {
     "mixup_p" : 1.0,
 
     "train_loader_config": {
-        "batch_size": 64,
-        "num_workers": 16,
+        "batch_size": 32,
+        "num_workers": 8,
         "pin_memory": True,
         "drop_last": True,
     },
@@ -36,23 +36,23 @@ config = {
         "kfold": 5,
         "seed": 42,
         "secondary_coef" : 1.0,
-        "smooth_label" : 0.1,
+        "smooth_label" : 0.05,
         "mel_spec_paramms": {
                 "sample_rate": 32000,
                 "n_mels": 128,
-                "f_min": 40,
-                "f_max": 15000,
+                "f_min": 20,
+                "f_max": 16000,
                 "n_fft": 2048,
                 "hop_length": 512,
                 "normalized": True,
                 "top_db": 80,
             }
     },
-    "exp_name": "EXP2",
+    "exp_name": "EXP3",
     "device": get_device(),
 
-    "lr_max": 2.5e-4,
-    "lr_min": 1e-7,
+    "lr_max": 3e-4,
+    "lr_min": 5e-7,
     "weight_decay": 1e-6,
 
     "apex": True,
@@ -63,6 +63,6 @@ config = {
 
     "early_stopping": 8,
 
-    "epochs" : 80,
+    "epochs" : 200,
     "output_folder" : "outputs",
 }

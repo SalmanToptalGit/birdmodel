@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import timm
+from utils.spec_utils import SpecAugment
 from torch.distributions import Beta
 
 class PoolingLayer(nn.Module):
@@ -83,6 +84,7 @@ class CNN(nn.Module):
         self.head = nn.Linear(self.mid_features, config["data_config"]["num_classes"])
         self.mixup_p = config["mixup_p"]
         self.mixup = Mixup(mix_beta=1)
+        self.spec_augment = SpecAugment(config["freq_mask"], config["time_mask"])
 
 
     def get_mixup_spec(self, input):
@@ -91,6 +93,7 @@ class CNN(nn.Module):
         weight = input["rating"]
         teacher_preds = input["teacher_preds"]
         if self.training:
+            x = self.spec_augment(x)
             if np.random.random() <= 0.5:
                 y2 = torch.repeat_interleave(y, 1, dim=0)
                 weight2 = torch.repeat_interleave(weight, 1, dim=0)
