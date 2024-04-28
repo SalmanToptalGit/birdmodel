@@ -106,16 +106,17 @@ class CNN(nn.Module):
         self.cutmix = Cutmix(mix_beta=1.0)
 
     def apply_mixup_cutmix(self, x, y, weight):
-        b, c, t, f = x.shape
-        x = x.permute(0, 2, 1, 3)  ## (bs * parts, time // parts, 1, mel)
-        x = x.reshape(b // self.factor, self.factor * t, c, f)  ## (bs, time, 1, mel)
+
+        b, c, f, t = x.shape
+        x = x.permute(0, 3, 1, 2)
+        x = x.reshape(b, t, c, f)
         if np.random.random() <= 1.0:
             x, y, weight = self.mixup(x, y, weight)
         if np.random.random() <= 0.5:
             x, y, weight = self.cutmix(x, y, weight)
         x = x.reshape(b, t, c, f)
-        x = x.permute(0, 2, 1, 3)
-        return x
+        x = x.permute(0, 2, 3, 1)
+        return x, y, weight
 
     def backbone_pass(self, x):
         spec = self.logmelspec_extractor(x["wave"]).unsqueeze(1)

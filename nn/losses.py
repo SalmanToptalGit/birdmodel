@@ -1,6 +1,23 @@
 import torch
 import torchvision
+import torch.nn as nn
+import torch.nn.functional as F
+class BCELoss(torch.nn.Module):
+    def __init__(self, scale_down = 0.3):
+        super().__init__()
+        self.scale_down = scale_down
 
+    def forward(self, x, num_classes=182):
+        inputs = x["logit"]
+        targets = x["smooth_targets"]
+        rating = x["rating"]
+
+        rating = rating.unsqueeze(1).repeat(1, num_classes)
+        loss = nn.BCEWithLogitsLoss(
+            weight=rating,
+            reduction='mean',
+        )(inputs, targets)
+        return loss * self.scale_down
 
 class FocalLoss(torch.nn.Module):
     def __init__(

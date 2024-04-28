@@ -9,7 +9,7 @@ import numpy as np
 from utils.metrics import calculate_metrics, metrics_to_string, calculate_competition_metrics
 from nn.dataset import  BirdDataset
 from nn.cnn import CNN
-from nn.losses import FocalLoss
+from nn.losses import *
 from torch.utils.data.sampler import WeightedRandomSampler
 from timm.scheduler import CosineLRScheduler
 from utils.init_utils import AverageMeter
@@ -21,30 +21,6 @@ warnings.filterwarnings("ignore")
 from utils.data_utils import setup_output_dir, read_dataframe, normalize_rating, do_kfold
 
 class Trainer:
-
-    def prepare_dataframe_config(self, CFG):
-        config = copy.deepcopy(CFG)
-
-        os.makedirs(config["output_folder"], exist_ok=True)
-        exp_folder = os.path.join(config["output_folder"], config["exp_name"])
-        os.makedirs(exp_folder, exist_ok=True)
-
-        set_seed(config["data_config"]["seed"])
-        base_data_path = config["base_data_path"]
-
-        df = pd.read_csv(os.path.join(base_data_path, 'birdclef-2024/train_metadata.csv'))
-        config["data_config"] = prepare_df_config(df, config["data_config"])
-        df = prepare_df_secondary_labels(df)
-        df["path"] = os.path.join(base_data_path, "birdclef-2024/train_audio") + "/" + df["filename"]
-
-        # Add Pseudo Labels Array
-        pseudo_df = pd.read_csv(os.path.join(base_data_path, 'birdclef-2024/train_meta_data_pseudo.csv'))
-        df['teacher_preds'] = pseudo_df[pseudo_df.columns.tolist()[2:]].values.tolist()
-
-        df = prepare_year_data_split(df, config["data_config"]["kfold"], config["data_config"]["seed"])
-        df["rating"] = np.clip(df["rating"] / df["rating"].max(), 0.1, 1.0)
-
-        return df, config
 
     def batch_to_device(self, batch, device):
         batch_dict = {key: batch[key].to(device) for key in batch}
