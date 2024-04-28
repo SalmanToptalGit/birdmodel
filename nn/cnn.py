@@ -1,10 +1,43 @@
-import numpy as np
-import torch
+
 import torch.nn as nn
-import torch.nn.functional as F
 import timm
-from utils.spec_utils import SpecAugment
-from torch.distributions import Beta
+from torchaudio.transforms import AmplitudeToDB, MelSpectrogram
+import torch
+import numpy as np
+from utils.torch_augs import *
+import warnings
+warnings.filterwarnings("ignore")
+
+
+
+
+class NormalizeMelSpec(nn.Module):
+    def __init__(self, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, X):
+        mean = X.mean((1, 2), keepdim=True)
+        std = X.std((1, 2), keepdim=True)
+        Xstd = (X - mean) / (std + self.eps)
+        norm_min, norm_max = \
+            Xstd.min(-1)[0].min(-1)[0], Xstd.max(-1)[0].max(-1)[0]
+        fix_ind = (norm_max - norm_min) > self.eps * torch.ones_like(
+            (norm_max - norm_min)
+        )
+        V = torch.zeros_like(Xstd)
+        if fix_ind.sum():
+            V_fix = Xstd[fix_ind]
+            norm_max_fix = norm_max[fix_ind, None, None]
+            norm_min_fix = norm_min[fix_ind, None, None]
+            V_fix = torch.max(
+                torch.min(V_fix, norm_max_fix),
+                norm_min_fix,
+            )
+            V_fix = (V_fix - norm_min_fix) / (norm_max_fix - norm_min_fix)
+            V[fix_ind] = V_fix
+        return V
+
 
 class PoolingLayer(nn.Module):
     def __init__(self, pool_type: str, p=3, eps=1e-6):
@@ -34,39 +67,25 @@ class PoolingLayer(nn.Module):
         return x
 
 
-class Mixup(nn.Module):
-    def __init__(self, mix_beta):
-
-        super(Mixup, self).__init__()
-        self.beta_distribution = Beta(mix_beta, mix_beta)
-
-    def forward(self, X, Y, weight=None, teacher_preds=None):
-
-        bs = X.shape[0]
-        n_dims = len(X.shape)
-        perm = torch.randperm(bs)
-        coeffs = self.beta_distribution.rsample(torch.Size((bs,))).to(X.device)
-
-        if n_dims == 2:
-            X = coeffs.view(-1, 1) * X + (1 - coeffs.view(-1, 1)) * X[perm]
-        elif n_dims == 3:
-            X = coeffs.view(-1, 1, 1) * X + (1 - coeffs.view(-1, 1, 1)) * X[perm]
-        else:
-            X = coeffs.view(-1, 1, 1, 1) * X + (1 - coeffs.view(-1, 1, 1, 1)) * X[perm]
-
-        Y = coeffs.view(-1, 1) * Y + (1 - coeffs.view(-1, 1)) * Y[perm]
-
-        if weight is None:
-            return X, Y
-        else:
-            weight = coeffs.view(-1) * weight + (1 - coeffs.view(-1)) * weight[perm]
-            teacher_preds = coeffs.view(-1, 1) * teacher_preds + (1 - coeffs.view(-1, 1)) * teacher_preds[perm]
-            return X, Y, weight, teacher_preds
-
-
 class CNN(nn.Module):
     def __init__(self, config):
         super().__init__()
+
+        mel_spec_params = config["mel_spec_params"]
+        self.logmelspec_extractor = nn.Sequential(
+            MelSpectrogram(
+                sample_rate=mel_spec_params["sample_rate"],
+                n_mels=mel_spec_params["n_mels"],
+                f_min=mel_spec_params["f_min"],
+                f_max=mel_spec_params["f_max"],
+                n_fft=mel_spec_params["n_fft"],
+                hop_length=mel_spec_params["hop_length"],
+                normalized=True,
+            ),
+            AmplitudeToDB(top_db=80.0),
+            NormalizeMelSpec(),
+        )
+
         out_indices = (3, 4)
         self.backbone = timm.create_model(
             config["backbone"],
@@ -81,115 +100,35 @@ class CNN(nn.Module):
         self.global_pools = torch.nn.ModuleList([PoolingLayer("GeM") for _ in out_indices])
         self.mid_features = np.sum(feature_dims)
         self.neck = torch.nn.BatchNorm1d(self.mid_features)
-        self.head = nn.Linear(self.mid_features, config["data_config"]["num_classes"])
-        self.mixup_p = config["mixup_p"]
-        self.mixup = Mixup(mix_beta=1)
-        self.spec_augment = SpecAugment(config["freq_mask"], config["time_mask"])
+        self.head = nn.Linear(self.mid_features, len(config["target_columns"]))
 
+        self.mixup = Mixup(mix_beta=1.0)
+        self.cutmix = Cutmix(mix_beta=1.0)
 
-    def get_mixup_spec(self, input):
-        x = input['spec']
-        y = input["loss_target"]
-        weight = input["rating"]
-        teacher_preds = input["teacher_preds"]
+    def apply_mixup_cutmix(self, x, y, weight):
+        b, c, t, f = x.shape
+        x = x.permute(0, 2, 1, 3)  ## (bs * parts, time // parts, 1, mel)
+        x = x.reshape(b // self.factor, self.factor * t, c, f)  ## (bs, time, 1, mel)
+        if np.random.random() <= 1.0:
+            x, y, weight = self.mixup(x, y, weight)
+        if np.random.random() <= 0.5:
+            x, y, weight = self.cutmix(x, y, weight)
+        x = x.reshape(b, t, c, f)
+        x = x.permute(0, 2, 1, 3)
+        return x
+
+    def backbone_pass(self, x):
+        spec = self.logmelspec_extractor(x["wave"]).unsqueeze(1)
+
         if self.training:
-            x = self.spec_augment(x)
-            if np.random.random() <= 0.5:
-                y2 = torch.repeat_interleave(y, 1, dim=0)
-                weight2 = torch.repeat_interleave(weight, 1, dim=0)
-                teacher_preds2 = torch.repeat_interleave(
-                    teacher_preds, 1, dim=0
-                )
+            spec, x["smooth_targets"], x["rating"] = self.apply_mixup_cutmix(x=spec, y=x["smooth_targets"], weight=x["rating"])
 
-                for i in range(0, x.shape[0], 1):
-                    x[i: i + 1], _, _, _ = self.mixup(
-                        x[i: i + 1],
-                        y2[i: i + 1],
-                        weight2[i: i + 1],
-                        teacher_preds2[i: i + 1],
-                    )
-
-            b, c, f, t = x.shape
-            x = x.permute(0, 3, 1, 2)
-            x = x.reshape(b, t, c, f)
-
-            if np.random.random() <= self.mixup_p:
-                x, y, weight, teacher_preds = self.mixup(x, y, weight, teacher_preds)
-
-            x = x.reshape(b, t, c, f)
-            x = x.permute(0, 2, 3, 1)
-        return {
-            "spec": x,
-            "loss_target" : y,
-            "rating" : weight,
-            "teacher_preds" : teacher_preds,
-        }
-
-
-
-    def get_features(self, input):
-        if self.training:
-            input = self.get_mixup_spec(input)
-            x = input['spec']
-            y = input["loss_target"]
-            weight = input["rating"]
-            teacher_preds = input["teacher_preds"]
-
-            ms = self.backbone(x)
-            h = torch.cat([global_pool(m) for m, global_pool in zip(ms, self.global_pools)], dim=1)
-            x = self.neck(h)
-            return {
-                "spec": x,
-                "loss_target": y,
-                "rating": weight,
-                "teacher_preds": teacher_preds,
-            }
-        else:
-            ms = self.backbone(input)
-            h = torch.cat([global_pool(m) for m, global_pool in zip(ms, self.global_pools)], dim=1)
-            input = self.neck(h)
-            return input
-
-
+        ms = self.backbone(spec)
+        h = torch.cat([global_pool(m) for m, global_pool in zip(ms, self.global_pools)], dim=1)
+        features = self.neck(h)
+        features = self.head(features)
+        x["logit"] = features
+        return x
 
     def forward(self, x):
-
-        input = self.get_features(x)
-        if self.training:
-            return {
-                "logit": self.head(input['spec']),
-                "loss_target": input["loss_target"],
-                "rating": input["rating"],
-                "teacher_preds": input["teacher_preds"],
-            }
-        else:
-            return self.head(input)
-
-
-
-class BCEKDLoss(nn.Module):
-    def __init__(self, weights=[0.1, 0.9], class_weights=None, num_classes=182):
-        super().__init__()
-
-        self.weights = weights
-        self.num_classes = num_classes
-        self.T = 20
-
-    def forward(self, output):
-        input_ = output["logit"]
-        target = output["loss_target"].float()
-        rating = output["rating"]
-        teacher_preds = output["teacher_preds"]
-
-        rating = rating.unsqueeze(1).repeat(1, self.num_classes)
-        loss = nn.BCEWithLogitsLoss(
-            weight=rating,
-            reduction='mean',
-        )(input_, target)
-
-        KD_loss = nn.KLDivLoss()(
-            F.log_softmax(input_ / self.T, dim=1),
-            F.softmax(teacher_preds / self.T, dim=1)
-            ) * (self.weights[1] * self.T * self.T)
-
-        return self.weights[0] * loss + KD_loss
+        return self.backbone_pass(x)

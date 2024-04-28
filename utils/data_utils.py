@@ -115,3 +115,30 @@ def prepare_whole_data_split(df, KFOLD=5, seed=2020):
     df = pd.concat(year_dfs).reset_index(drop=True)
     return df
 
+import os
+def setup_output_dir(config):
+    os.makedirs(config["output_folder"], exist_ok=True)
+    exp_folder = os.path.join(config["output_folder"], config["exp_name"])
+    os.makedirs(exp_folder, exist_ok=True)
+    config["exp_folder"] = exp_folder
+    return config
+
+def normalize_rating(df):
+    return np.clip(df["rating"] / df["rating"].max(), 0.1, 1.0)
+
+
+def do_kfold(df, KFOLD=5, seed=42):
+    skf = StratifiedKFold(n_splits=KFOLD, random_state=seed, shuffle=True)
+    df['fold'] = -1
+    for fold, (train_idx, val_idx) in enumerate(skf.split(X=df, y=df["primary_label"].values)):
+        df.loc[val_idx, 'fold'] = fold
+    return df
+
+
+def read_dataframe():
+    df = pd.read_csv('../data/birdclef-2024/train_metadata.csv')
+    df["path"] = "../data/birdclef-2024/train_audio/" + df["filename"]
+    return df
+
+
+
