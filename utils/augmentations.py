@@ -16,7 +16,7 @@ class BackgroundNoice():
         birdvox = glob.glob(f"{background_path}/birdvox/*")
         rainforest = glob.glob(f"{background_path}/rainforest/*")
         environment = glob.glob(f"{background_path}/environment/*")
-        self.aug = AA.AddBackgroundNoise(birdclef2021_nocall + birdclef2020_nocall + freefield + warblrb + birdvox + rainforest + environment, min_snr_in_db=3.0,max_snr_in_db=20.0, p=p)
+        self.aug = AA.AddBackgroundNoise(birdclef2021_nocall + birdclef2020_nocall + freefield + warblrb + birdvox + rainforest + environment, min_snr_in_db=0,max_snr_in_db=3.0, p=p)
         self.sr = sr
 
     def __call__(self, y: np.ndarray):

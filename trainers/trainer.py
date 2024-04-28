@@ -1,3 +1,5 @@
+from audiomentations import Compose
+
 from utils.init_utils import init_logger, set_seed
 from utils.data_utils import prepare_df_secondary_labels, prepare_df_config, prepare_df_year, prepare_year_data_split
 import torch
@@ -14,6 +16,8 @@ from utils.init_utils import AverageMeter
 from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 import gc
+from albumentations import HorizontalFlip,  Compose, Normalize, CoarseDropout
+from albumentations.pytorch import ToTensorV2
 import warnings
 import copy
 warnings.filterwarnings("ignore")
@@ -68,14 +72,14 @@ class Trainer:
                     outputs = model(batch)
                     loss = criterion(outputs)
 
-                losses.update(loss.item(), batch["wave"].size(0))
+                losses.update(loss.item(), batch["spec"].size(0))
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     model.parameters(), max_norm=max_grad_norm)
                 scaler.step(optimizer)
                 scaler.update()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 scheduler.step(epoch + i / iters)
                 t.set_postfix(
                     loss=losses.avg,
@@ -102,11 +106,11 @@ class Trainer:
                 batch = self.batch_to_device(batch, device)
                 with autocast(enabled=apex):
                     with torch.no_grad():
-                        outputs = model(batch["wave"])
+                        outputs = model(batch["spec"])
                         batch["logit"] = outputs
                         loss = criterion(batch)
 
-                losses.update(loss.item(), batch["wave"].size(0))
+                losses.update(loss.item(), batch["spec"].size(0))
                 t.set_postfix(loss=losses.avg)
 
                 gt.append(batch["primary_targets"].cpu().detach().numpy())
@@ -143,18 +147,35 @@ class Trainer:
         sampler = WeightedRandomSampler(torch.from_numpy(samples_weight).type('torch.DoubleTensor'),
                                         len(samples_weight))
 
-        trn_dataset = BirdDataset(df=trn_df, config=data_config,
-                                  wave_transforms=[BackgroundNoice((os.path.join(base_data_path, "background_noise")))],
-                                  is_train=True)
-        train_loader = torch.utils.data.DataLoader(trn_dataset, shuffle=True,
+        train_transforms = Compose([
+            HorizontalFlip(p=0.5),
+            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225], max_pixel_value=255.0, p=1.0),
+            CoarseDropout(p=0.5),
+            ToTensorV2(p=1.0),
+        ], p=1.)
+
+        valid_transforms = Compose([
+            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225], max_pixel_value=255.0, p=1.0),
+            ToTensorV2(p=1.0),
+        ], p=1.)
+
+
+
+
+        trn_dataset = BirdDataset(df=trn_df, config=data_config, wave_transforms=[], image_transform=train_transforms, is_train=True)
+        train_loader = torch.utils.data.DataLoader(trn_dataset, shuffle=False, sampler=sampler,
                                                    **config["train_loader_config"])
 
-        v_ds = BirdDataset(df=val_df.reset_index(drop=True), config=data_config, wave_transforms=[], is_train=False)
+        v_ds = BirdDataset(df=val_df.reset_index(drop=True), config=data_config, wave_transforms=[], image_transform=valid_transforms, is_train=False)
         val_loader = torch.utils.data.DataLoader(v_ds, shuffle=False, **config["val_loader_config"])
 
         model = CNN(config).to(config["device"])
 
         criterion = BCEKDLoss(num_classes=config["data_config"]["num_classes"])
+
+        # optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=config["epochs"], T_mult=1, eta_min=1e-6, last_epoch=-1)
+
         optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr_max"], betas=(0.9, 0.999), eps=1e-08,
                                       weight_decay=config["weight_decay"], amsgrad=False, )
         scheduler = CosineLRScheduler(optimizer, t_initial=10, warmup_t=1, cycle_limit=40, cycle_decay=1.0,

@@ -2,9 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from utils.spec_utils import SpecFeatureExtractor, SpecAugment
 import timm
-import os
 from torch.distributions import Beta
 
 class PoolingLayer(nn.Module):
@@ -69,8 +67,6 @@ class CNN(nn.Module):
     def __init__(self, config):
         super().__init__()
         out_indices = (3, 4)
-        self.logmelspec_extractor = SpecFeatureExtractor(config["mel_spec_paramms"], config["exportable"],
-                                                         config["top_db"])
         self.backbone = timm.create_model(
             config["backbone"],
             features_only=True,
@@ -86,37 +82,33 @@ class CNN(nn.Module):
         self.neck = torch.nn.BatchNorm1d(self.mid_features)
         self.head = nn.Linear(self.mid_features, config["data_config"]["num_classes"])
         self.mixup_p = config["mixup_p"]
-        self.factor = config["factor"]
         self.mixup = Mixup(mix_beta=1)
 
 
     def get_mixup_spec(self, input):
-        x = input['wave']
-        bs, time = x.shape
-        x = x.reshape(bs * self.factor, time // self.factor)
+        x = input['spec']
         y = input["loss_target"]
         weight = input["rating"]
         teacher_preds = input["teacher_preds"]
-        x = self.logmelspec_extractor(x)
         if self.training:
             if np.random.random() <= 0.5:
-                y2 = torch.repeat_interleave(y, self.factor, dim=0)
-                weight2 = torch.repeat_interleave(weight, self.factor, dim=0)
+                y2 = torch.repeat_interleave(y, 1, dim=0)
+                weight2 = torch.repeat_interleave(weight, 1, dim=0)
                 teacher_preds2 = torch.repeat_interleave(
-                    teacher_preds, self.factor, dim=0
+                    teacher_preds, 1, dim=0
                 )
 
-                for i in range(0, x.shape[0], self.factor):
-                    x[i: i + self.factor], _, _, _ = self.mixup(
-                        x[i: i + self.factor],
-                        y2[i: i + self.factor],
-                        weight2[i: i + self.factor],
-                        teacher_preds2[i: i + self.factor],
+                for i in range(0, x.shape[0], 1):
+                    x[i: i + 1], _, _, _ = self.mixup(
+                        x[i: i + 1],
+                        y2[i: i + 1],
+                        weight2[i: i + 1],
+                        teacher_preds2[i: i + 1],
                     )
 
             b, c, f, t = x.shape
             x = x.permute(0, 3, 1, 2)
-            x = x.reshape(b // self.factor, self.factor * t, c, f)
+            x = x.reshape(b, t, c, f)
 
             if np.random.random() <= self.mixup_p:
                 x, y, weight, teacher_preds = self.mixup(x, y, weight, teacher_preds)
@@ -124,19 +116,18 @@ class CNN(nn.Module):
             x = x.reshape(b, t, c, f)
             x = x.permute(0, 2, 3, 1)
         return {
-            "wave": x,
+            "spec": x,
             "loss_target" : y,
             "rating" : weight,
             "teacher_preds" : teacher_preds,
         }
-    def get_spec(self, input):
-        x = self.logmelspec_extractor(input)
-        return x
+
+
 
     def get_features(self, input):
         if self.training:
             input = self.get_mixup_spec(input)
-            x = input['wave']
+            x = input['spec']
             y = input["loss_target"]
             weight = input["rating"]
             teacher_preds = input["teacher_preds"]
@@ -145,13 +136,12 @@ class CNN(nn.Module):
             h = torch.cat([global_pool(m) for m, global_pool in zip(ms, self.global_pools)], dim=1)
             x = self.neck(h)
             return {
-                "wave": x,
+                "spec": x,
                 "loss_target": y,
                 "rating": weight,
                 "teacher_preds": teacher_preds,
             }
         else:
-            input = self.get_spec(input)
             ms = self.backbone(input)
             h = torch.cat([global_pool(m) for m, global_pool in zip(ms, self.global_pools)], dim=1)
             input = self.neck(h)
@@ -163,16 +153,11 @@ class CNN(nn.Module):
 
         input = self.get_features(x)
         if self.training:
-            x = input['wave']
-            y = input["loss_target"]
-            weight = input["rating"]
-            teacher_preds = input["teacher_preds"]
-            x = self.head(x)
             return {
-                "logit": x,
-                "loss_target": y,
-                "rating": weight,
-                "teacher_preds": teacher_preds,
+                "logit": self.head(input['spec']),
+                "loss_target": input["loss_target"],
+                "rating": input["rating"],
+                "teacher_preds": input["teacher_preds"],
             }
         else:
             return self.head(input)

@@ -1,23 +1,23 @@
 from utils.init_utils import get_device
 
 config = {
-    "mel_spec_paramms": {
-        "sample_rate": 32000,
-        "n_mels": 128,
-        "f_min": 40,
-        "f_max": 15000,
-        "n_fft": 2048,
-        "hop_length": 512,
-        "normalized": True,
+    "freq_mask" : {
+        "mask_max_length": 10,
+        "mask_max_masks": 3,
+        "p": 0.3,
+        "inplace": True,
     },
-    "backbone": "tf_efficientnetv2_s_in21k",
+    "time_mask" : {
+        "mask_max_length": 20,
+        "mask_max_masks": 3,
+        "p": 0.3,
+        "inplace": True,
+    },
+    "backbone": "eca_nfnet_l0",
     "pretrained": True,
-    "folds": [0, 1, 2, 3, 4],
-    "in_chans": 1,
-    "exportable": True,
-    "top_db": 80,
+    "folds": [3],
+    "in_chans": 3,
     "mixup_p" : 1.0,
-    "factor" : 1,
 
     "train_loader_config": {
         "batch_size": 64,
@@ -37,8 +37,18 @@ config = {
         "seed": 42,
         "secondary_coef" : 1.0,
         "smooth_label" : 0.1,
+        "mel_spec_paramms": {
+                "sample_rate": 32000,
+                "n_mels": 128,
+                "f_min": 40,
+                "f_max": 15000,
+                "n_fft": 2048,
+                "hop_length": 512,
+                "normalized": True,
+                "top_db": 80,
+            }
     },
-    "exp_name": "EXP1",
+    "exp_name": "EXP2",
     "device": get_device(),
 
     "lr_max": 2.5e-4,
