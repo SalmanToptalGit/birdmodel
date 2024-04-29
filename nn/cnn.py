@@ -130,7 +130,6 @@ class CNN(nn.Module):
         return normalized_images
 
     def norm_to_rgb(self, A):
-        A = A.expand(-1, 3, -1, -1)
         A = self.normalize_images(A)
         A = self.imagenet_norm(A.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
         return A
@@ -152,10 +151,9 @@ class CNN(nn.Module):
 
     def backbone_pass(self, x):
         spec = self.logmelspec_extractor(x["wave"]).unsqueeze(1)
-        spec = self.norm_to_rgb(spec)
-        spec = self.spec_aug(spec)
 
         if self.training:
+            spec = self.spec_aug(spec)
             if self.KD:
                 teacher_preds = None
             else:
@@ -163,6 +161,7 @@ class CNN(nn.Module):
 
             spec, x["smooth_targets"], x["rating"], x["teacher_preds"] = self.apply_mixup(x=spec, y=x["smooth_targets"], weight=x["rating"], teacher_preds=teacher_preds)
 
+        spec = spec.expand(-1, 3, -1, -1)
         ms = self.backbone(spec)
         h = torch.cat([global_pool(m) for m, global_pool in zip(ms, self.global_pools)], dim=1)
         features = self.neck(h)

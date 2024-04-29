@@ -48,15 +48,15 @@ class Trainer:
                 losses.update(loss.item(), batch["wave"].size(0))
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), max_norm=max_grad_norm)
+                # grad_norm = torch.nn.utils.clip_grad_norm_(
+                #     model.parameters(), max_norm=max_grad_norm)
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
                 scheduler.step(epoch + i / iters)
                 t.set_postfix(
                     loss=losses.avg,
-                    grad=grad_norm.item(),
+                    # grad=grad_norm.item(),
                     lr=optimizer.param_groups[0]["lr"]
                 )
                 gt.append(batch["primary_targets"].cpu().detach().numpy())

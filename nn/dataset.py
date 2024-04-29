@@ -30,6 +30,7 @@ class BirdDataset(torchdata.Dataset):
         self.num_classes = num_classes
         self.add_secondary_labels = add_secondary_labels
         self.KD = config["KD"]
+        self.add_smoth = config["smooth_label"] > 0.03
 
     def __len__(self):
         return len(self.df)
@@ -81,11 +82,16 @@ class BirdDataset(torchdata.Dataset):
         rating = self.df["rating"].iloc[idx]
         target = self.prepare_target(idx)
 
+        if self.add_smoth:
+            smooth_target = target * (1 - self.smooth_label) + self.smooth_label / target.size(-1)
+        else:
+            smooth_target = target
+
         batch_dict = {
             "wave": waveform_seg,
             "rating": rating,
             "primary_targets": (target > 0.5).float(),
-            "smooth_targets": target * (1 - self.smooth_label) + self.smooth_label / target.size(-1),
+            "smooth_targets": smooth_target,
             "teacher_preds" : -1,
         }
 
