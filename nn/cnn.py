@@ -9,8 +9,8 @@ from utils.torch_augs import Mixup
 import warnings
 import torch.nn.functional as F
 from utils.spec_utils import TraceableMelspec, NormalizeMelSpec
-from torchvision.transforms import Normalize
 warnings.filterwarnings("ignore")
+import copy
 
 
 class PoolingLayer(nn.Module):
@@ -62,6 +62,7 @@ class CNN(nn.Module):
     def __init__(self, config):
         super().__init__()
 
+        config = copy.deepcopy(config)
         mel_spec_params = config["mel_spec_params"]
         top_db = mel_spec_params.pop("top_db")
         self.logmelspec_extractor = nn.Sequential(

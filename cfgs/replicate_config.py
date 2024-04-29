@@ -41,7 +41,7 @@ config = {
     "sampler" : False,
 
     "output_folder": "outputs",
-    "exp_name": "EXP5",
+    "exp_name": "EXP6",
 
     "device": get_device(),
     "apex": True,
