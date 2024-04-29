@@ -115,28 +115,33 @@ class Trainer:
         # sampler = WeightedRandomSampler(torch.from_numpy(samples_weight).type('torch.DoubleTensor'),
         #                                 len(samples_weight))
 
-        one_hot_target = np.zeros((trn_df.shape[0], len(config["target_columns"])), dtype=np.float32)
 
-        for i, label in enumerate(trn_df.primary_label):
-            primary_label = config["bird2id"][label]
-            one_hot_target[i, primary_label] = 1.0
+        if config["sampler"]:
+            one_hot_target = np.zeros((trn_df.shape[0], len(config["target_columns"])), dtype=np.float32)
 
-        sampler = MultilabelBalancedRandomSampler(
-            one_hot_target,
-            trn_df.index,
-            class_choice="least_sampled"
-        )
+            for i, label in enumerate(trn_df.primary_label):
+                primary_label = config["bird2id"][label]
+                one_hot_target[i, primary_label] = 1.0
 
-
+            sampler = MultilabelBalancedRandomSampler(
+                one_hot_target,
+                trn_df.index,
+                class_choice="least_sampled"
+            )
+            shuffle = False
+        else:
+            sampler = None
+            shuffle = True
 
 
         trn_dataset = BirdDataset(df=trn_df.reset_index(drop=True), config=config,
-                                  num_classes=len(config["target_columns"]), add_secondary_labels=True)
-        train_loader = torch.utils.data.DataLoader(trn_dataset, shuffle=False, sampler=sampler,
+                                  num_classes=len(config["target_columns"]),
+                                  add_secondary_labels=True)
+        train_loader = torch.utils.data.DataLoader(trn_dataset, shuffle=shuffle, sampler=sampler,
                                                    **config["train_loader_config"])
 
         v_ds = BirdDataset(df=val_df.reset_index(drop=True), config=config, num_classes=len(config["target_columns"]),
-                           add_secondary_labels=False)
+                           add_secondary_labels=True)
         val_loader = torch.utils.data.DataLoader(v_ds, shuffle=False, **config["val_loader_config"])
 
         model = CNN(config).to(config["device"])
@@ -144,7 +149,7 @@ class Trainer:
         if config["KD"]:
             criterion = BCEKDLoss()
         else:
-            criterion = FocalLoss()
+            criterion = FocalLossBCE()
 
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr_max"], betas=(0.9, 0.999), eps=1e-08,
@@ -227,6 +232,6 @@ class Trainer:
         df["teacher_preds"] = prepare_teacher_pred(config["target_columns"])
         set_seed(config["seed"])
         df["rating"] = normalize_rating(df)
-        df = do_kfold(df, KFOLD=5)
+        df = do_kfold(df, KFOLD=5, seed=config["seed"])
         for fold in config["fold"]:
             self.train_fold(df, config, fold)

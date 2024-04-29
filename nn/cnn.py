@@ -8,37 +8,9 @@ import numpy as np
 from utils.torch_augs import Mixup
 import warnings
 import torch.nn.functional as F
+from utils.spec_utils import TraceableMelspec, NormalizeMelSpec
+from torchvision.transforms import Normalize
 warnings.filterwarnings("ignore")
-
-
-
-
-class NormalizeMelSpec(nn.Module):
-    def __init__(self, eps=1e-6):
-        super().__init__()
-        self.eps = eps
-
-    def forward(self, X):
-        mean = X.mean((1, 2), keepdim=True)
-        std = X.std((1, 2), keepdim=True)
-        Xstd = (X - mean) / (std + self.eps)
-        norm_min, norm_max = \
-            Xstd.min(-1)[0].min(-1)[0], Xstd.max(-1)[0].max(-1)[0]
-        fix_ind = (norm_max - norm_min) > self.eps * torch.ones_like(
-            (norm_max - norm_min)
-        )
-        V = torch.zeros_like(Xstd)
-        if fix_ind.sum():
-            V_fix = Xstd[fix_ind]
-            norm_max_fix = norm_max[fix_ind, None, None]
-            norm_min_fix = norm_min[fix_ind, None, None]
-            V_fix = torch.max(
-                torch.min(V_fix, norm_max_fix),
-                norm_min_fix,
-            )
-            V_fix = (V_fix - norm_min_fix) / (norm_max_fix - norm_min_fix)
-            V[fix_ind] = V_fix
-        return V
 
 
 class PoolingLayer(nn.Module):
@@ -84,23 +56,18 @@ class GeM(nn.Module):
         x = x.view(bs, ch)
         return x
 
+
+
 class CNN(nn.Module):
     def __init__(self, config):
         super().__init__()
 
         mel_spec_params = config["mel_spec_params"]
+        top_db = mel_spec_params.pop("top_db")
         self.logmelspec_extractor = nn.Sequential(
-            MelSpectrogram(
-                sample_rate=mel_spec_params["sample_rate"],
-                n_mels=mel_spec_params["n_mels"],
-                f_min=mel_spec_params["f_min"],
-                f_max=mel_spec_params["f_max"],
-                n_fft=mel_spec_params["n_fft"],
-                hop_length=mel_spec_params["hop_length"],
-                normalized=True,
-            ),
-            AmplitudeToDB(top_db=80.0),
-            NormalizeMelSpec(),
+            TraceableMelspec(**mel_spec_params),
+            AmplitudeToDB(top_db=top_db),
+            NormalizeMelSpec(exportable=True),
         )
 
         out_indices = (3, 4)
@@ -114,14 +81,62 @@ class CNN(nn.Module):
         )
         feature_dims = self.backbone.feature_info.channels()
         print(f"feature dims: {feature_dims}")
-        self.global_pools = torch.nn.ModuleList([GeM() for _ in out_indices])
+        self.global_pools = torch.nn.ModuleList([PoolingLayer('GeM') for _ in out_indices])
         self.mid_features = np.sum(feature_dims)
         self.neck = torch.nn.BatchNorm1d(self.mid_features)
         self.head = nn.Linear(self.mid_features, len(config["target_columns"]))
 
+        self.spec_aug = SpecAugment(freq_mask_config=config["spec_augment_config"]["freq_mask"],
+                                    time_mask_config=config["spec_augment_config"]["time_mask"])
         self.mixup = Mixup(mix_beta=1.0)
+        self.KD = config["KD"]
+        self.in_chans = config["in_chans"]
+        self.device = config["device"]
 
-    def apply_mixup_cutmix(self, x, y, weight, teacher_preds=None):
+    def imagenet_norm(self, img, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225], max_pixel_value=255.0):
+        mean = torch.tensor(mean).unsqueeze(0).unsqueeze(1).unsqueeze(2).to(self.device)
+        std = torch.tensor(std).unsqueeze(0).unsqueeze(1).unsqueeze(2).to(self.device)
+
+
+        mean *= max_pixel_value
+        std *= max_pixel_value
+
+        denominator = 1.0 / std
+
+        img -= mean
+        img *= denominator
+        return img
+
+    def normalize_images(self, images):
+        # Assuming images is a PyTorch tensor of size [BS x C x W x H]
+        bs, c, w, h = images.size()
+
+        # Reshape images to [BS x (C*W*H)] to calculate min and max across all channels and pixels
+        reshaped_images = images.contiguous().view(bs, c, -1)
+
+        # Calculate min and max values across all images, channels, and pixels
+        min_vals, _ = reshaped_images.min(dim=2, keepdim=True)
+        max_vals, _ = reshaped_images.max(dim=2, keepdim=True)
+
+        # Normalize images to the range [0, 1]
+        normalized_images = (images - min_vals.unsqueeze(3)) / (max_vals.unsqueeze(3) - min_vals.unsqueeze(3) + 1e-6)
+
+        # Scale the normalized images to the range [0, 255]
+        normalized_images *= 255.0
+
+        # # Convert the tensor to uint8 data type
+        # normalized_images = normalized_images.to(torch.uint8)
+
+        return normalized_images
+
+    def norm_to_rgb(self, A):
+        A = A.expand(-1, 3, -1, -1)
+        A = self.normalize_images(A)
+        A = self.imagenet_norm(A.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        return A
+
+
+    def apply_mixup(self, x, y, weight, teacher_preds=None):
 
         b, c, f, t = x.shape
         x = x.permute(0, 3, 1, 2)
@@ -137,9 +152,16 @@ class CNN(nn.Module):
 
     def backbone_pass(self, x):
         spec = self.logmelspec_extractor(x["wave"]).unsqueeze(1)
+        spec = self.norm_to_rgb(spec)
+        spec = self.spec_aug(spec)
 
         if self.training:
-            spec, x["smooth_targets"], x["rating"], x["teacher_preds"] = self.apply_mixup_cutmix(x=spec, y=x["smooth_targets"], weight=x["rating"], teacher_preds=x["teacher_preds"])
+            if self.KD:
+                teacher_preds = None
+            else:
+                teacher_preds = x["teacher_preds"]
+
+            spec, x["smooth_targets"], x["rating"], x["teacher_preds"] = self.apply_mixup(x=spec, y=x["smooth_targets"], weight=x["rating"], teacher_preds=teacher_preds)
 
         ms = self.backbone(spec)
         h = torch.cat([global_pool(m) for m, global_pool in zip(ms, self.global_pools)], dim=1)

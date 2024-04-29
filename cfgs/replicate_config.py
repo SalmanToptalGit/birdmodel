@@ -11,30 +11,48 @@ config = {
         "normalized": True,
         "top_db": 80,
     },
+
+
+    "spec_augment_config" : {
+            "freq_mask": {
+                "mask_max_length": 10,
+                "mask_max_masks": 3,
+                "p": 0.3,
+                "inplace": True,
+            },
+            "time_mask": {
+                "mask_max_length": 20,
+                "mask_max_masks": 3,
+                "p": 0.3,
+                "inplace": True,
+            },
+        },
+
     "seed": 42,
     "secondary_coef": 1.0,
-    "smooth_label": 0.05,
+    "smooth_label": 0.0,
     "period": 5,
-    "backbone": "tf_efficientnet_b3_ns",
+    "backbone": "seresnext26t_32x4d",
     "pretrained": True,
-    "fold": [3],
-    "in_chans": 1,
+    "fold": [2, 1, 4, 0, 3],
+    "in_chans": 3,
 
-    "KD" : True,
+    "KD" : False,
+    "sampler" : False,
 
     "output_folder": "outputs",
-    "exp_name": "EXP4",
+    "exp_name": "EXP5",
 
     "device": get_device(),
     "apex": True,
     "max_grad_norm": 10,
 
-    "early_stopping": 25,
-    "epochs": 150,
+    "early_stopping": 7,
+    "epochs": 60,
 
     "train_loader_config": {
-        "batch_size": 32,
-        "num_workers": 8,
+        "batch_size": 64,
+        "num_workers": 16,
         "pin_memory": True,
         "drop_last": True,
     },

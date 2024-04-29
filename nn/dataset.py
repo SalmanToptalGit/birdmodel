@@ -86,7 +86,7 @@ class BirdDataset(torchdata.Dataset):
             "rating": rating,
             "primary_targets": (target > 0.5).float(),
             "smooth_targets": target * (1 - self.smooth_label) + self.smooth_label / target.size(-1),
-            "teacher_preds" : None,
+            "teacher_preds" : -1,
         }
 
         if self.KD:
