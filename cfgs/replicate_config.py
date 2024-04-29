@@ -49,6 +49,7 @@ config = {
 
     "early_stopping": 7,
     "epochs": 60,
+    "warmpup_epochs" : 3,
 
     "train_loader_config": {
         "batch_size": 64,

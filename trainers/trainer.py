@@ -12,6 +12,8 @@ from nn.cnn import CNN
 from nn.losses import *
 from torch.utils.data.sampler import WeightedRandomSampler
 from timm.scheduler import CosineLRScheduler
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from warmup_scheduler import GradualWarmupScheduler
 from utils.init_utils import AverageMeter
 from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
@@ -21,13 +23,30 @@ import copy
 warnings.filterwarnings("ignore")
 from utils.data_utils import setup_output_dir, read_dataframe, normalize_rating, do_kfold, prepare_teacher_pred
 
+
+class GradualWarmupSchedulerV2(GradualWarmupScheduler):
+    def __init__(self, optimizer, multiplier, total_epoch, after_scheduler=None):
+        super(GradualWarmupSchedulerV2, self).__init__(optimizer, multiplier, total_epoch, after_scheduler)
+    def get_lr(self):
+        if self.last_epoch > self.total_epoch:
+            if self.after_scheduler:
+                if not self.finished:
+                    self.after_scheduler.base_lrs = [base_lr * self.multiplier for base_lr in self.base_lrs]
+                    self.finished = True
+                return self.after_scheduler.get_lr()
+            return [base_lr * self.multiplier for base_lr in self.base_lrs]
+        if self.multiplier == 1.0:
+            return [base_lr * (float(self.last_epoch) / self.total_epoch) for base_lr in self.base_lrs]
+        else:
+            return [base_lr * ((self.multiplier - 1.) * self.last_epoch / self.total_epoch + 1.) for base_lr in self.base_lrs]
+
 class Trainer:
 
     def batch_to_device(self, batch, device):
         batch_dict = {key: batch[key].to(device) for key in batch}
         return batch_dict
 
-    def train_one_epoch(self, data_loader, model, criterion, optimizer, scheduler, epoch, device, apex,
+    def train_one_epoch_old(self, data_loader, model, criterion, optimizer, scheduler, epoch, device, apex,
                         max_grad_norm, target_columns):
 
         model.train()
@@ -48,15 +67,50 @@ class Trainer:
                 losses.update(loss.item(), batch["wave"].size(0))
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
-                # grad_norm = torch.nn.utils.clip_grad_norm_(
-                #     model.parameters(), max_norm=max_grad_norm)
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), max_norm=max_grad_norm)
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
                 scheduler.step(epoch + i / iters)
                 t.set_postfix(
                     loss=losses.avg,
-                    # grad=grad_norm.item(),
+                    grad=grad_norm.item(),
+                    lr=optimizer.param_groups[0]["lr"]
+                )
+                gt.append(batch["primary_targets"].cpu().detach().numpy())
+                preds.append(outputs["logit"].sigmoid().cpu().detach().numpy())
+
+        gt = np.concatenate(gt)
+        preds = np.concatenate(preds)
+        scores = calculate_competition_metrics(gt, preds, target_columns)
+        return scores, losses.avg
+
+
+    def train_one_epoch(self, data_loader, model, criterion, optimizer, scheduler, epoch, device, apex,
+                        max_grad_norm, target_columns):
+
+        model.train()
+        losses = AverageMeter()
+        # scaler = GradScaler(enabled=apex)
+        # iters = len(data_loader)
+        gt = []
+        preds = []
+        with tqdm(enumerate(data_loader), total=len(data_loader)) as t:
+            for i, (batch) in t:
+                optimizer.zero_grad()
+                batch = self.batch_to_device(batch, device)
+
+                outputs = model(batch)
+                loss = criterion(outputs)
+                losses.update(loss.item(), batch["wave"].size(0))
+                loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+                optimizer.step()
+
+
+                t.set_postfix(
+                    loss=losses.avg,
                     lr=optimizer.param_groups[0]["lr"]
                 )
                 gt.append(batch["primary_targets"].cpu().detach().numpy())
@@ -156,14 +210,20 @@ class Trainer:
                                       weight_decay=config["weight_decay"], amsgrad=False, )
         scheduler = CosineLRScheduler(optimizer, t_initial=10, warmup_t=1, cycle_limit=40, cycle_decay=1.0,
                                       lr_min=config["lr_min"], t_in_epochs=True, )
+        #
+        # optimizer = torch.optim.Adam(model.parameters(), lr=config["lr_max"])
+        # scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config["epochs"] - config["warmpup_epochs"])
+        # scheduler = GradualWarmupSchedulerV2(optimizer, multiplier=10, total_epoch=config["warmpup_epochs"],
+        #                                             after_scheduler=scheduler_cosine)
+
 
         patience = config["early_stopping"]
         best_score = 0.0
         n_patience = 0
 
         for epoch in range(1, config["epochs"] + 1):
-
-            train_scores, train_losses_avg = self.train_one_epoch(data_loader=train_loader, model=model,
+            scheduler.step(epoch - 1)
+            train_scores, train_losses_avg = self.train_one_epoch_old(data_loader=train_loader, model=model,
                                                              criterion=criterion, optimizer=optimizer,
                                                              scheduler=scheduler,
                                                              epoch=0, device=config["device"],
